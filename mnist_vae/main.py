@@ -67,9 +67,9 @@ def apply_model(state: train_state.TrainState,
     def loss_fn(params):
         recon, mu, logvar = state.apply_fn({ "params": params }, x, rng)
 
-        recon_loss = jnp.sum((x - recon) ** 2, axis=-1)
-        kl_loss = -0.5 * jnp.sum(1 + logvar - mu ** 2 - jnp.exp(logvar), axis=-1)
-        loss = jnp.mean(recon_loss + kl_loss)
+        recon_loss = jnp.mean(jnp.sum((x - recon) ** 2, axis=-1))
+        kl_loss = jnp.mean(-0.5 * jnp.sum(1 + logvar - mu ** 2 - jnp.exp(logvar), axis=-1))
+        loss = recon_loss + 0.1 * kl_loss
 
         return loss, (recon_loss, kl_loss)
 
@@ -108,6 +108,7 @@ def postprocess(x: jnp.ndarray) -> jnp.ndarray:
     x = (x + 0.5) * 255.
     x = jnp.clip(x, 0, 255)
     x = x.astype(jnp.uint8)
+    return x
 
 
 def train_epoch(state: train_state.TrainState,
@@ -135,10 +136,14 @@ def train_epoch(state: train_state.TrainState,
 
 
 def sample_images(num_images: int, state: train_state.TrainState, rng):
-    z = jax.random.normal(rng, (num_images, 20))
-    x = state.apply_fn({"params": state.params}, z)
-    x = postprocess(x)
+    def impl(vae):
+        z = jax.random.normal(rng, (num_images, 20))
+        x = vae.decode(z)
+        x = postprocess(x)
+        return x
 
+    fn = jax.jit(nn.apply(impl, VAE(n_latent=20)))
+    x = fn({ "params": state.params })
     return x
 
 
@@ -152,13 +157,15 @@ def main():
     ds = ds.with_format("jax")
 
     for epoch in range(50):
-        state, recon_loss, kl_loss = train_epoch(state, ds["train"], batch_size=128, rng=train_rng)
+        state, recon_loss, kl_loss = train_epoch(state, ds["train"], batch_size=512, rng=train_rng)
         print(f"Epoch {epoch} | Recon Loss: {recon_loss} | KL Loss: {kl_loss}")
 
     images = sample_images(10, state, rng=eval_rng)
-    images = np.concatenate(images, axis=1)
-    images = Image.fromarray(images)
-    images.save(f"images/{epoch}.png")
+
+    for i in range(images.shape[0]):
+        image = jnp.asarray(images[i])
+        image = np.array(image)
+        Image.fromarray(image).save(f"images/{i}.png")
 
 
 if __name__ == "__main__":
